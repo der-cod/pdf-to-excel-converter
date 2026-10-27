@@ -31,7 +31,7 @@ button:focus-visible,.drop:focus-within{outline:3px solid var(--ac);outline-offs
 .wrap{overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--card);max-height:55vh}
 table{border-collapse:collapse;font-size:.85rem;font-variant-numeric:tabular-nums}
 td{border:1px solid var(--line);padding:3px 8px;white-space:nowrap}
-tr.pg td{background:var(--ac);color:#fff;font-weight:600}
+#pv{background:#fff;color:#000}#pv table{table-layout:fixed;font-family:Arial,sans-serif}#pv td{border:0;padding:1px 3px;white-space:pre-wrap;overflow:hidden;vertical-align:middle;line-height:1.15}
 </style>
 </head>
 <body>
@@ -43,90 +43,270 @@ tr.pg td{background:var(--ac);color:#fff;font-weight:600}
 <label>Toleransi baris: <span id="rv">3</span> pt<input id="rt" type="range" min="1" max="10" step="0.5" value="3"></label>
 <label>Jarak antar kolom: <span id="cv">8</span> pt<input id="ct" type="range" min="2" max="30" step="1" value="8"></label>
 <label class="chk"><input id="num" type="checkbox" checked>Ubah angka menjadi numerik</label>
-<label class="chk"><input id="one" type="checkbox">Gabung semua halaman dalam satu sheet</label>
+<label>Halaman pratinjau<select id="pgsel" style="width:100%;padding:6px"></select></label>
 </div>
 <button id="dl" disabled>Unduh Excel</button>
 <div id="st" role="status"></div>
 <div class="wrap" id="pv" hidden></div>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 let raw=[],out=[],base='hasil';
+const T=1.5;
+const cl=(arr,t)=>{arr=[...arr].sort((a,b)=>a-b);const o=[];for(const v of arr){const l=o[o.length-1];if(l&&v-l.m<=t){l.s+=v;l.n++;l.m=l.s/l.n}else o.push({s:v,n:1,m:v})}return o.map(g=>g.m)};
+const near=(a,v)=>a.reduce((p,q)=>Math.abs(q-v)<Math.abs(p-v)?q:p);
+const mul=(a,b)=>[a[0]*b[0]+a[1]*b[2],a[0]*b[1]+a[1]*b[3],a[2]*b[0]+a[3]*b[2],a[2]*b[1]+a[3]*b[3],a[4]*b[0]+a[5]*b[2]+b[4],a[4]*b[1]+a[5]*b[3]+b[5]];
+
+// Ambil garis tabel dan warna isian dari instruksi gambar PDF
+async function vec(page){
+  const O=pdfjsLib.OPS,ol=await page.getOperatorList();
+  let m=[1,0,0,1,0,0],fc='#000000',st=[],segs=[],rects=[],cur=null;
+  const H=[],V=[],F=[];
+  const pt=(x,y)=>[m[0]*x+m[2]*y+m[4],m[1]*x+m[3]*y+m[5]];
+  const seg=(a,b)=>{const dx=Math.abs(a[0]-b[0]),dy=Math.abs(a[1]-b[1]);
+    if(dy<=.8&&dx>2)H.push({y:(a[1]+b[1])/2,x1:Math.min(a[0],b[0]),x2:Math.max(a[0],b[0])});
+    else if(dx<=.8&&dy>2)V.push({x:(a[0]+b[0])/2,y1:Math.min(a[1],b[1]),y2:Math.max(a[1],b[1])})};
+  const STROKE=[O.stroke,O.closeStroke,O.fillStroke,O.eoFillStroke,O.closeFillStroke,O.closeEOFillStroke];
+  const FILL=[O.fill,O.eoFill,O.fillStroke,O.eoFillStroke,O.closeFillStroke,O.closeEOFillStroke];
+  for(let i=0;i<ol.fnArray.length;i++){
+    const f=ol.fnArray[i],a=ol.argsArray[i];
+    if(f===O.save){st.push([m,fc])}
+    else if(f===O.restore){const s=st.pop();if(s){m=s[0];fc=s[1]}}
+    else if(f===O.transform){m=mul(a,m)}
+    else if(f===O.paintFormXObjectBegin){st.push([m,fc]);if(a&&a[0])m=mul(a[0],m)}
+    else if(f===O.paintFormXObjectEnd){const s=st.pop();if(s){m=s[0];fc=s[1]}}
+    else if(f===O.setFillRGBColor){const c=Array.from(a);fc='#'+c.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('')}
+    else if(f===O.constructPath){
+      const ops=a[0],c=a[1];let k=0,sp=null;
+      for(const o of ops){
+        if(o===O.moveTo){sp=cur=pt(c[k],c[k+1]);k+=2}
+        else if(o===O.lineTo){const p=pt(c[k],c[k+1]);k+=2;if(cur)segs.push([cur,p]);cur=p}
+        else if(o===O.curveTo){k+=6;cur=null}
+        else if(o===O.curveTo2||o===O.curveTo3){k+=4;cur=null}
+        else if(o===O.closePath){if(cur&&sp)segs.push([cur,sp]);cur=sp}
+        else if(o===O.rectangle){const p1=pt(c[k],c[k+1]),p2=pt(c[k]+c[k+2],c[k+1]+c[k+3]);k+=4;
+          rects.push({x1:Math.min(p1[0],p2[0]),x2:Math.max(p1[0],p2[0]),y1:Math.min(p1[1],p2[1]),y2:Math.max(p1[1],p2[1])})}
+      }
+    }else if(STROKE.includes(f)||FILL.includes(f)||f===O.endPath){
+      if(STROKE.includes(f)){
+        segs.forEach(s=>seg(s[0],s[1]));
+        rects.forEach(r=>{seg([r.x1,r.y1],[r.x2,r.y1]);seg([r.x1,r.y2],[r.x2,r.y2]);seg([r.x1,r.y1],[r.x1,r.y2]);seg([r.x2,r.y1],[r.x2,r.y2])});
+      }
+      if(FILL.includes(f)){
+        rects.forEach(r=>{const w=r.x2-r.x1,h=r.y2-r.y1;
+          if(Math.min(w,h)<=2.5){if(w>h)seg([r.x1,(r.y1+r.y2)/2],[r.x2,(r.y1+r.y2)/2]);else seg([(r.x1+r.x2)/2,r.y1],[(r.x1+r.x2)/2,r.y2])}
+          else if(fc!=='#ffffff')F.push({...r,c:fc.slice(1)})});
+      }
+      segs=[];rects=[];cur=null;
+    }
+  }
+  return{H,V,F};
+}
 
 $('f').onchange=async e=>{
-  const files=[...e.target.files]; if(!files.length)return;
+  const files=[...e.target.files];if(!files.length)return;
   $('fn').textContent=files.map(f=>f.name).join(', ');
-  base=files[0].name.replace(/\.pdf$/i,'');
-  raw=[];
+  base=files[0].name.replace(/\.pdf$/i,'');raw=[];
   try{
     for(const [fi,f] of files.entries()){
       const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
       for(let p=1;p<=pdf.numPages;p++){
         $('st').textContent=`Membaca ${f.name}, halaman ${p}/${pdf.numPages}...`;
-        const tc=await(await pdf.getPage(p)).getTextContent();
-        raw.push({fi,p,multi:files.length>1,items:tc.items.filter(i=>i.str.trim()).map(i=>({x:i.transform[4],y:i.transform[5],s:i.str,w:i.width}))});
+        const page=await pdf.getPage(p);
+        const tc=await page.getTextContent(),v=await vec(page);
+        raw.push({name:(files.length>1?`F${fi+1}-`:'')+`Hal ${p}`,...v,
+          items:tc.items.filter(i=>i.str.trim()).map(i=>({x:i.transform[4],y:i.transform[5],s:i.str,w:i.width,fs:Math.hypot(i.transform[0],i.transform[1])||10}))});
       }
     }
+    $('pgsel').replaceChildren(...raw.map((r,i)=>new Option(r.name,i)));
     build();
   }catch(err){$('st').textContent='Gagal membaca PDF: '+err.message+'. Pastikan file tidak terkunci password.'}
 };
-['rt','ct','num','one'].forEach(i=>$(i).oninput=()=>{$('rv').textContent=$('rt').value;$('cv').textContent=$('ct').value;if(raw.length)build()});
+['rt','ct','num'].forEach(i=>$(i).oninput=()=>{$('rv').textContent=$('rt').value;$('cv').textContent=$('ct').value;if(raw.length)build()});
+$('pgsel').onchange=()=>show();
 
-function grid(items,rt,ct){
-  items=[...items].sort((a,b)=>b.y-a.y||a.x-b.x);
-  const rows=[];
-  for(const it of items){
-    const r=rows[rows.length-1];
-    if(r&&Math.abs(r.y-it.y)<=rt)r.it.push(it);else rows.push({y:it.y,it:[it]});
+function lines(items,rt,ct){ // item -> baris -> sel (dipakai untuk teks di luar tabel)
+  items=[...items].sort((a,b)=>b.y-a.y||a.x-b.x);const rows=[];
+  for(const it of items){const r=rows[rows.length-1];if(r&&Math.abs(r.y-it.y)<=rt)r.it.push(it);else rows.push({y:it.y,it:[it]})}
+  return rows.map(r=>{r.it.sort((a,b)=>a.x-b.x);const cells=[];let end=-1e9;
+    for(const it of r.it){const c=cells[cells.length-1];
+      if(c&&it.x-end<ct){c.s+=(it.x-end>1?' ':'')+it.s;c.fs=Math.max(c.fs,it.fs)}else cells.push({x:it.x,s:it.s,fs:it.fs,y:r.y});
+      end=it.x+it.w}
+    return cells});
+}
+function joinLines(items,rt){
+  items.sort((a,b)=>b.y-a.y||a.x-b.x);const L=[];
+  for(const it of items){const l=L[L.length-1];if(l&&Math.abs(l.y-it.y)<=rt){l.it.push(it)}else L.push({y:it.y,it:[it]})}
+  return L.map(l=>{l.it.sort((a,b)=>a.x-b.x);let s='',e=null;for(const it of l.it){s+=(e!==null&&it.x-e>1?' ':'')+it.s;e=it.x+it.w}return s}).join('\n');
+}
+
+function model(pg,rt,ct){
+  const ysC=cl(pg.H.map(s=>s.y),T),xsC=cl(pg.V.map(s=>s.x),T);
+  const S=[...pg.H.map(s=>({h:1,y:near(ysC,s.y),x1:s.x1,x2:s.x2})),...pg.V.map(s=>({x:near(xsC,s.x),y1:s.y1,y2:s.y2}))];
+  const p=S.map((_,i)=>i),f=i=>p[i]===i?i:(p[i]=f(p[i]));
+  const tch=(a,b)=>a.h&&b.h?Math.abs(a.y-b.y)<=T&&a.x1<=b.x2+T&&b.x1<=a.x2+T
+    :!a.h&&!b.h?Math.abs(a.x-b.x)<=T&&a.y1<=b.y2+T&&b.y1<=a.y2+T
+    :a.h?(b.x>=a.x1-T&&b.x<=a.x2+T&&a.y>=b.y1-T&&a.y<=b.y2+T):tch(b,a);
+  if(S.length<6000)for(let i=0;i<S.length;i++)for(let j=i+1;j<S.length;j++)if(f(i)!==f(j)&&tch(S[i],S[j]))p[f(i)]=f(j);
+  const cm=new Map();S.forEach((s,i)=>{const r=f(i);if(!cm.has(r))cm.set(r,[]);cm.get(r).push(s)});
+  let comps=[];
+  for(const ss of cm.values()){
+    const hs=ss.filter(s=>s.h),vs=ss.filter(s=>!s.h);
+    if(new Set(hs.map(s=>s.y)).size<2||new Set(vs.map(s=>s.x)).size<2)continue;
+    comps.push({s:ss,x1:Math.min(...hs.map(s=>s.x1)),x2:Math.max(...hs.map(s=>s.x2)),y1:Math.min(...vs.map(s=>s.y1)),y2:Math.max(...vs.map(s=>s.y2))});
   }
-  const lines=rows.map(r=>{
-    r.it.sort((a,b)=>a.x-b.x);
-    const cells=[];let end=-1e9;
-    for(const it of r.it){
-      const c=cells[cells.length-1];
-      if(c&&it.x-end<ct){c.s+=(it.x-end>1?' ':'')+it.s}else cells.push({x:it.x,s:it.s});
-      end=it.x+it.w;
+  comps.sort((a,b)=>b.y2-a.y2);
+  const groups=[];
+  for(const c of comps){const g=groups[groups.length-1];
+    if(g&&c.y2>g.y1){g.comps.push(c);g.y1=Math.min(g.y1,c.y1)}else groups.push({comps:[c],y1:c.y1,y2:c.y2})}
+  // grid per grup
+  const grids=groups.map(g=>{
+    const ss=g.comps.flatMap(c=>c.s),hs=ss.filter(s=>s.h),vs=ss.filter(s=>!s.h);
+    const xs=cl(vs.map(s=>s.x),T),ys=cl(hs.map(s=>s.y),T).reverse();
+    return{g,hs,vs,xs,ys,nr:ys.length-1,nc:xs.length-1};
+  }).filter(G=>G.nr>0&&G.nc>0);
+  for(const G of grids){
+    const{g,hs,vs,xs,ys,nr,nc}=G;
+    G.hv=(x,a,b)=>{const m=(a+b)/2;return vs.some(s=>Math.abs(s.x-x)<=T&&s.y1-T<=m&&m<=s.y2+T)};
+    G.hh=(y,a,b)=>{const m=(a+b)/2;return hs.some(s=>Math.abs(s.y-y)<=T&&s.x1-T<=m&&m<=s.x2+T)};
+    G.ins=(r,c)=>{const cx=(xs[c]+xs[c+1])/2,cy=(ys[r]+ys[r+1])/2;return g.comps.some(k=>cx>=k.x1-T&&cx<=k.x2+T&&cy>=k.y1-T&&cy<=k.y2+T)};
+    const u=Array.from({length:nr*nc},(_,i)=>i),ff=i=>u[i]===i?i:(u[i]=ff(u[i]));
+    G.ff=ff;
+    for(let r=0;r<nr;r++)for(let c=0;c<nc;c++){
+      if(!G.ins(r,c))continue;
+      if(c+1<nc&&G.ins(r,c+1)&&!G.hv(xs[c+1],ys[r],ys[r+1]))u[ff(r*nc+c)]=ff(r*nc+c+1);
+      if(r+1<nr&&G.ins(r+1,c)&&!G.hh(ys[r+1],xs[c],xs[c+1]))u[ff(r*nc+c)]=ff((r+1)*nc+c);
     }
-    return cells;
-  });
-  const xs=lines.flat().map(c=>c.x).sort((a,b)=>a-b),anchors=[];
-  for(const x of xs){if(!anchors.length||x-anchors[anchors.length-1].last>ct)anchors.push({x,last:x});else anchors[anchors.length-1].last=x}
-  const col=x=>{let k=0;for(let i=0;i<anchors.length;i++)if(x>=anchors[i].x-ct/2)k=i;return k};
-  return lines.map(cells=>{
-    const row=Array(anchors.length).fill('');
-    for(const c of cells){const k=col(c.x);row[k]=row[k]?row[k]+' '+c.s:c.s}
-    return row;
-  });
+    G.cells=new Map();
+    for(let r=0;r<nr;r++)for(let c=0;c<nc;c++){
+      if(!G.ins(r,c))continue;const k=ff(r*nc+c);
+      let o=G.cells.get(k);if(!o){o={r0:r,r1:r,c0:c,c1:c,items:[]};G.cells.set(k,o)}
+      o.r0=Math.min(o.r0,r);o.r1=Math.max(o.r1,r);o.c0=Math.min(o.c0,c);o.c1=Math.max(o.c1,c);
+    }
+    G.x1=Math.min(...g.comps.map(c=>c.x1));G.x2=Math.max(...g.comps.map(c=>c.x2));
+  }
+  // bagi teks: dalam sel tabel atau di luar
+  const free=[];
+  for(const it of pg.items){
+    const cx=it.x+it.w/2,cy=it.y+it.fs*.3;let hit=false;
+    for(const G of grids){
+      if(cx<G.xs[0]||cx>=G.xs[G.nc]||cy>=G.ys[0]||cy<G.ys[G.nr])continue;
+      let c=0,r=0;while(c<G.nc-1&&cx>=G.xs[c+1])c++;while(r<G.nr-1&&cy<G.ys[r+1])r++;
+      if(!G.ins(r,c))continue;
+      G.cells.get(G.ff(r*G.nc+c)).items.push(it);hit=true;break;
+    }
+    if(!hit)free.push(it);
+  }
+  // kolom bersama
+  let B=cl(grids.flatMap(G=>G.xs),T);
+  const fl=lines(free,rt,ct);
+  [...new Set(fl.flatMap(r=>r.map(c=>c.x)))].sort((a,b)=>a-b).forEach(x=>{if(!B.length||Math.abs(near(B,x)-x)>ct)B.push(x)});
+  B.sort((a,b)=>a-b);if(!B.length)return{colW:[],rowH:[],cells:[]};
+  B.push(B[B.length-1]+80);
+  const ix=x=>B.indexOf(near(B,x));
+  const colW=B.slice(0,-1).map((x,i)=>B[i+1]-x);
+  // blok vertikal
+  const blocks=[...grids.map(G=>({top:G.ys[0],bot:G.ys[G.nr],G})),...fl.map(r=>({top:r[0].y+Math.max(...r.map(c=>c.fs))*.85,bot:r[0].y-Math.max(...r.map(c=>c.fs))*.3,row:r}))].sort((a,b)=>b.top-a.top);
+  const rowH=[],cells=[];let prev=null;
+  for(const b of blocks){
+    if(prev!==null&&prev-b.top>6)rowH.push(Math.min(prev-b.top,40));
+    const R=rowH.length;
+    if(b.G){
+      const{G}=b;
+      for(let r=0;r<G.nr;r++)rowH.push(G.ys[r]-G.ys[r+1]);
+      for(const k of G.cells.values()){
+        const xl=G.xs[k.c0],xr=G.xs[k.c1+1];
+        
+        const bd={
+          l:Array.from({length:k.r1-k.r0+1},(_,i)=>k.r0+i).every(r=>G.hv(xl,G.ys[r],G.ys[r+1])),
+          r:Array.from({length:k.r1-k.r0+1},(_,i)=>k.r0+i).every(r=>G.hv(xr,G.ys[r],G.ys[r+1])),
+          t:Array.from({length:k.c1-k.c0+1},(_,i)=>k.c0+i).every(c=>G.hh(G.ys[k.r0],G.xs[c],G.xs[c+1])),
+          b:Array.from({length:k.c1-k.c0+1},(_,i)=>k.c0+i).every(c=>G.hh(G.ys[k.r1+1],G.xs[c],G.xs[c+1]))};
+        let al='left',t='',fs=9;
+        if(k.items.length){
+          t=joinLines(k.items,rt);fs=Math.max(...k.items.map(i=>i.fs));
+          const gl=Math.min(...k.items.map(i=>i.x))-xl,gr=xr-Math.max(...k.items.map(i=>i.x+i.w));
+          al=gl>3&&Math.abs(gl-gr)<=Math.max(3,.1*(xr-xl))?'center':(gr<gl-2?'right':'left');
+        }
+        const cx=(xl+xr)/2,cy=(G.ys[k.r0]+G.ys[k.r1+1])/2;
+        const fl2=pg.F.filter(q=>cx>=q.x1&&cx<=q.x2&&cy>=q.y1&&cy<=q.y2).sort((a,b)=>(a.x2-a.x1)*(a.y2-a.y1)-(b.x2-b.x1)*(b.y2-b.y1))[0];
+        const c0=ix(xl);
+        cells.push({r:R+k.r0,c:c0,rs:k.r1-k.r0+1,cs:Math.max(1,ix(xr)-c0),t,fs,al,b:bd,fill:fl2&&fl2.c});
+      }
+    }else{
+      rowH.push(Math.max(...b.row.map(c=>c.fs))*1.3);
+      for(const c of b.row)cells.push({r:R,c:ix(c.x),rs:1,cs:1,t:c.s,fs:c.fs,al:'left',b:{}});
+    }
+    prev=b.bot;
+  }
+  // cegah tabrakan sel
+  const occ=new Set(),ok=[];
+  for(const c of cells){
+    const cov=(rs,cs)=>{for(let i=0;i<rs;i++)for(let j=0;j<cs;j++)if(occ.has((c.r+i)+','+(c.c+j)))return false;return true};
+    if(!cov(c.rs,c.cs)){c.rs=1;c.cs=1;if(!cov(1,1))continue}
+    for(let i=0;i<c.rs;i++)for(let j=0;j<c.cs;j++)occ.add((c.r+i)+','+(c.c+j));
+    ok.push(c);
+  }
+  return{colW,rowH,cells:ok};
 }
-function conv(v,on){
-  if(!on||typeof v!=='string')return v;
-  const t=v.trim();
-  return /^-?(0|[1-9]\d*)(\.\d+)?$/.test(t)?parseFloat(t):v;
-}
+
 function build(){
-  const rt=+$('rt').value,ct=+$('ct').value,on=$('num').checked;
-  out=raw.map(pg=>({name:(pg.multi?`F${pg.fi+1}-`:'')+`Hal ${pg.p}`,rows:grid(pg.items,rt,ct).map(r=>r.map(v=>conv(v,on)))}));
-  const tbl=document.createElement('table');let n=0;
-  for(const pg of out){
-    if(n>300)break;
-    const h=tbl.insertRow();h.className='pg';const hc=h.insertCell();hc.colSpan=12;hc.textContent=pg.name;
-    for(const r of pg.rows){if(n++>300)break;const tr=tbl.insertRow();for(const v of r)tr.insertCell().textContent=v}
-  }
-  $('pv').hidden=false;$('pv').replaceChildren(tbl);
-  $('dl').disabled=false;
-  $('st').textContent=`${out.length} halaman terbaca. Pratinjau menampilkan maksimal 300 baris. Jika kolom menyatu atau terpecah, atur slider di atas.`;
+  const rt=+$('rt').value,ct=+$('ct').value;
+  out=raw.map(pg=>({name:pg.name.slice(0,31),...model(pg,rt,ct)}));
+  $('dl').disabled=false;show();
+  $('st').textContent=`${out.length} halaman terbaca. Pratinjau mengikuti bentuk tabel di PDF. Jika ada teks yang menyatu atau terpecah, atur slider.`;
 }
-$('dl').onclick=()=>{
-  const wb=XLSX.utils.book_new();
-  if($('one').checked){
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(out.flatMap(p=>p.rows)),'Semua');
-  }else{
-    for(const p of out)XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(p.rows),p.name.slice(0,31));
+function show(){
+  const m=out[+$('pgsel').value||0];if(!m)return;
+  const k=1.2,nc=m.colW.length,grid=m.rowH.map(()=>Array(nc).fill(null));
+  for(const c of m.cells)for(let i=0;i<c.rs;i++)for(let j=0;j<c.cs;j++)if(grid[c.r+i])grid[c.r+i][c.c+j]=(i||j)?'x':c;
+  const tb=document.createElement('table');
+  tb.style.width=m.colW.reduce((a,b)=>a+b,0)*k+'px';
+  const cg=document.createElement('colgroup');m.colW.forEach(w=>{const c=document.createElement('col');c.style.width=w*k+'px';cg.append(c)});tb.append(cg);
+  m.rowH.forEach((h,r)=>{
+    const tr=tb.insertRow();tr.style.height=h*k+'px';
+    for(let c=0;c<nc;c++){const o=grid[r][c];if(o==='x')continue;
+      const td=tr.insertCell();if(!o)continue;
+      td.rowSpan=o.rs;td.colSpan=o.cs;td.textContent=o.t;
+      td.style.fontSize=Math.max(6,o.fs*k)+'px';td.style.textAlign=o.al;
+      const L='1px solid #000';
+      if(o.b.l)td.style.borderLeft=L;if(o.b.r)td.style.borderRight=L;if(o.b.t)td.style.borderTop=L;if(o.b.b)td.style.borderBottom=L;
+      if(o.fill)td.style.background='#'+o.fill;
+    }
+  });
+  $('pv').hidden=false;$('pv').replaceChildren(tb);
+}
+const num=(v,on)=>{if(!on)return v;const t=v.trim();return /^-?(0|[1-9]\d*)(\.\d+)?$/.test(t)?parseFloat(t):v};
+$('dl').onclick=async()=>{
+  $('dl').disabled=true;$('st').textContent='Membuat file Excel...';
+  const wb=new ExcelJS.Workbook(),on=$('num').checked,thin={style:'thin',color:{argb:'FF000000'}};
+  const used=new Set();
+  for(const m of out){
+    let nm=m.name,n=2;while(used.has(nm))nm=m.name.slice(0,28)+'_'+n++;used.add(nm);
+    const ws=wb.addWorksheet(nm);
+    ws.columns=m.colW.map(w=>({width:Math.max(1.5,w*.19)}));
+    m.rowH.forEach((h,i)=>ws.getRow(i+1).height=Math.max(6,h));
+    for(const c of m.cells){
+      ws.getCell(c.r+1,c.c+1).value=num(c.t,on&&!c.t.includes('\n'))||null;
+      for(let i=0;i<c.rs;i++)for(let j=0;j<c.cs;j++){
+        const x=ws.getCell(c.r+1+i,c.c+1+j),bd={};
+        if(c.b.l&&j===0)bd.left=thin;if(c.b.r&&j===c.cs-1)bd.right=thin;
+        if(c.b.t&&i===0)bd.top=thin;if(c.b.b&&i===c.rs-1)bd.bottom=thin;
+        x.border=bd;
+        x.font={name:'Arial',size:Math.min(72,Math.max(6,Math.round(c.fs)))};
+        x.alignment={horizontal:c.al,vertical:'middle',wrapText:c.rs>1||c.cs>1||c.t.includes('\n')};
+        if(c.fill)x.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF'+c.fill}};
+      }
+      if(c.rs>1||c.cs>1)ws.mergeCells(c.r+1,c.c+1,c.r+c.rs,c.c+c.cs);
+    }
   }
-  XLSX.writeFile(wb,base+'.xlsx');
+  const buf=await wb.xlsx.writeBuffer();
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  a.download=base+'.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+  $('dl').disabled=false;$('st').textContent='File Excel sudah diunduh.';
 };
 if('serviceWorker'in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js'));
 </script>

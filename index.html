@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0F7B5F">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>PDF ke Excel</title>
+<style>
+:root{--ink:#14232B;--paper:#F3F5F4;--card:#fff;--ac:#0F7B5F;--line:#C9D1D3;--mut:#5B6B72}
+@media(prefers-color-scheme:dark){:root{--ink:#E6ECEE;--paper:#101A1F;--card:#17252C;--line:#2D4048;--mut:#8FA3AB;--ac:#2FB88F}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px 32px}
+main{max-width:900px;margin:0 auto}
+h1{font-size:1.5rem;margin:8px 0 4px}
+p.s{margin:0 0 16px;color:var(--mut)}
+.drop{display:block;border:2px dashed var(--line);border-radius:6px;padding:28px 16px;text-align:center;background:var(--card);cursor:pointer}
+.drop:focus-within,.drop:hover{border-color:var(--ac)}
+.drop input{position:absolute;opacity:0;width:1px;height:1px}
+.drop b{display:block;font-size:1.05rem}
+.opt{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0}
+.opt label{font-size:.9rem;color:var(--mut);display:block}
+.opt input[type=range]{width:100%;accent-color:var(--ac)}
+.chk{display:flex;gap:8px;align-items:center;color:var(--ink)!important}
+button{background:var(--ac);color:#fff;border:0;border-radius:6px;padding:12px 20px;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:focus-visible,.drop:focus-within{outline:3px solid var(--ac);outline-offset:2px}
+#st{margin:12px 0;color:var(--mut);min-height:1.5em}
+.wrap{overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--card);max-height:55vh}
+table{border-collapse:collapse;font-size:.85rem;font-variant-numeric:tabular-nums}
+td{border:1px solid var(--line);padding:3px 8px;white-space:nowrap}
+tr.pg td{background:var(--ac);color:#fff;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>PDF ke Excel</h1>
+<p class="s">Proses berjalan di perangkat Anda. File PDF tidak diunggah ke server.</p>
+<label class="drop"><input id="f" type="file" accept="application/pdf" multiple><b>Pilih file PDF</b><span id="fn">Bisa lebih dari satu file</span></label>
+<div class="opt">
+<label>Toleransi baris: <span id="rv">3</span> pt<input id="rt" type="range" min="1" max="10" step="0.5" value="3"></label>
+<label>Jarak antar kolom: <span id="cv">8</span> pt<input id="ct" type="range" min="2" max="30" step="1" value="8"></label>
+<label class="chk"><input id="num" type="checkbox" checked>Ubah angka menjadi numerik</label>
+<label class="chk"><input id="one" type="checkbox">Gabung semua halaman dalam satu sheet</label>
+</div>
+<button id="dl" disabled>Unduh Excel</button>
+<div id="st" role="status"></div>
+<div class="wrap" id="pv" hidden></div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let raw=[],out=[],base='hasil';
+
+$('f').onchange=async e=>{
+  const files=[...e.target.files]; if(!files.length)return;
+  $('fn').textContent=files.map(f=>f.name).join(', ');
+  base=files[0].name.replace(/\.pdf$/i,'');
+  raw=[];
+  try{
+    for(const [fi,f] of files.entries()){
+      const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+      for(let p=1;p<=pdf.numPages;p++){
+        $('st').textContent=`Membaca ${f.name}, halaman ${p}/${pdf.numPages}...`;
+        const tc=await(await pdf.getPage(p)).getTextContent();
+        raw.push({fi,p,multi:files.length>1,items:tc.items.filter(i=>i.str.trim()).map(i=>({x:i.transform[4],y:i.transform[5],s:i.str,w:i.width}))});
+      }
+    }
+    build();
+  }catch(err){$('st').textContent='Gagal membaca PDF: '+err.message+'. Pastikan file tidak terkunci password.'}
+};
+['rt','ct','num','one'].forEach(i=>$(i).oninput=()=>{$('rv').textContent=$('rt').value;$('cv').textContent=$('ct').value;if(raw.length)build()});
+
+function grid(items,rt,ct){
+  items=[...items].sort((a,b)=>b.y-a.y||a.x-b.x);
+  const rows=[];
+  for(const it of items){
+    const r=rows[rows.length-1];
+    if(r&&Math.abs(r.y-it.y)<=rt)r.it.push(it);else rows.push({y:it.y,it:[it]});
+  }
+  const lines=rows.map(r=>{
+    r.it.sort((a,b)=>a.x-b.x);
+    const cells=[];let end=-1e9;
+    for(const it of r.it){
+      const c=cells[cells.length-1];
+      if(c&&it.x-end<ct){c.s+=(it.x-end>1?' ':'')+it.s}else cells.push({x:it.x,s:it.s});
+      end=it.x+it.w;
+    }
+    return cells;
+  });
+  const xs=lines.flat().map(c=>c.x).sort((a,b)=>a-b),anchors=[];
+  for(const x of xs){if(!anchors.length||x-anchors[anchors.length-1].last>ct)anchors.push({x,last:x});else anchors[anchors.length-1].last=x}
+  const col=x=>{let k=0;for(let i=0;i<anchors.length;i++)if(x>=anchors[i].x-ct/2)k=i;return k};
+  return lines.map(cells=>{
+    const row=Array(anchors.length).fill('');
+    for(const c of cells){const k=col(c.x);row[k]=row[k]?row[k]+' '+c.s:c.s}
+    return row;
+  });
+}
+function conv(v,on){
+  if(!on||typeof v!=='string')return v;
+  const t=v.trim();
+  return /^-?(0|[1-9]\d*)(\.\d+)?$/.test(t)?parseFloat(t):v;
+}
+function build(){
+  const rt=+$('rt').value,ct=+$('ct').value,on=$('num').checked;
+  out=raw.map(pg=>({name:(pg.multi?`F${pg.fi+1}-`:'')+`Hal ${pg.p}`,rows:grid(pg.items,rt,ct).map(r=>r.map(v=>conv(v,on)))}));
+  const tbl=document.createElement('table');let n=0;
+  for(const pg of out){
+    if(n>300)break;
+    const h=tbl.insertRow();h.className='pg';const hc=h.insertCell();hc.colSpan=12;hc.textContent=pg.name;
+    for(const r of pg.rows){if(n++>300)break;const tr=tbl.insertRow();for(const v of r)tr.insertCell().textContent=v}
+  }
+  $('pv').hidden=false;$('pv').replaceChildren(tbl);
+  $('dl').disabled=false;
+  $('st').textContent=`${out.length} halaman terbaca. Pratinjau menampilkan maksimal 300 baris. Jika kolom menyatu atau terpecah, atur slider di atas.`;
+}
+$('dl').onclick=()=>{
+  const wb=XLSX.utils.book_new();
+  if($('one').checked){
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(out.flatMap(p=>p.rows)),'Semua');
+  }else{
+    for(const p of out)XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(p.rows),p.name.slice(0,31));
+  }
+  XLSX.writeFile(wb,base+'.xlsx');
+};
+if('serviceWorker'in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js'));
+</script>
+</body>
+</html>

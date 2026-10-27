@@ -28,10 +28,10 @@ button{background:var(--ac);color:#fff;border:0;border-radius:6px;padding:12px 2
 button:disabled{opacity:.4;cursor:not-allowed}
 button:focus-visible,.drop:focus-within{outline:3px solid var(--ac);outline-offset:2px}
 #st{margin:12px 0;color:var(--mut);min-height:1.5em}
-.wrap{overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--card);max-height:55vh}
+.wrap{overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--card);max-height:70vh}
 table{border-collapse:collapse;font-size:.85rem;font-variant-numeric:tabular-nums}
 td{border:1px solid var(--line);padding:3px 8px;white-space:nowrap}
-#pv{background:#fff;color:#000}#pv table{table-layout:fixed;font-family:Arial,sans-serif}#pv td{border:0;padding:1px 3px;white-space:pre-wrap;overflow:hidden;vertical-align:middle;line-height:1.15}
+#pv{background:#9aa5aa;padding:8px}.paper{position:relative;background:#fff;color:#000;margin:0 auto}#pv table{table-layout:fixed;font-family:Arial,sans-serif}#pv td{border:0;padding:1px 3px;white-space:pre-wrap;overflow:hidden;vertical-align:middle;line-height:1.15}
 </style>
 </head>
 <body>
@@ -61,11 +61,11 @@ const near=(a,v)=>a.reduce((p,q)=>Math.abs(q-v)<Math.abs(p-v)?q:p);
 const mul=(a,b)=>[a[0]*b[0]+a[1]*b[2],a[0]*b[1]+a[1]*b[3],a[2]*b[0]+a[3]*b[2],a[2]*b[1]+a[3]*b[3],a[4]*b[0]+a[5]*b[2]+b[4],a[4]*b[1]+a[5]*b[3]+b[5]];
 
 // Ambil garis tabel dan warna isian dari instruksi gambar PDF
-async function vec(page){
+async function vec(page,vp){
   const O=pdfjsLib.OPS,ol=await page.getOperatorList();
   let m=[1,0,0,1,0,0],fc='#000000',st=[],segs=[],rects=[],cur=null;
   const H=[],V=[],F=[];
-  const pt=(x,y)=>[m[0]*x+m[2]*y+m[4],m[1]*x+m[3]*y+m[5]];
+  const pt=(x,y)=>{const q=vp.convertToViewportPoint(m[0]*x+m[2]*y+m[4],m[1]*x+m[3]*y+m[5]);return[q[0],vp.height-q[1]]};
   const seg=(a,b)=>{const dx=Math.abs(a[0]-b[0]),dy=Math.abs(a[1]-b[1]);
     if(dy<=.8&&dx>2)H.push({y:(a[1]+b[1])/2,x1:Math.min(a[0],b[0]),x2:Math.max(a[0],b[0])});
     else if(dx<=.8&&dy>2)V.push({x:(a[0]+b[0])/2,y1:Math.min(a[1],b[1]),y2:Math.max(a[1],b[1])})};
@@ -115,13 +115,13 @@ $('f').onchange=async e=>{
       const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
       for(let p=1;p<=pdf.numPages;p++){
         $('st').textContent=`Membaca ${f.name}, halaman ${p}/${pdf.numPages}...`;
-        const page=await pdf.getPage(p);
-        const tc=await page.getTextContent(),v=await vec(page);
-        raw.push({name:(files.length>1?`F${fi+1}-`:'')+`Hal ${p}`,...v,
-          items:tc.items.filter(i=>i.str.trim()).map(i=>({x:i.transform[4],y:i.transform[5],s:i.str,w:i.width,fs:Math.hypot(i.transform[0],i.transform[1])||10}))});
+        const page=await pdf.getPage(p),vp=page.getViewport({scale:1});
+        const tc=await page.getTextContent(),v=await vec(page,vp);
+        raw.push({name:(files.length>1?`F${fi+1}-`:'')+`Hal ${p}`,W:vp.width,H:vp.height,...v,
+          items:tc.items.filter(i=>i.str.trim()).map(i=>{const t=i.transform,fs=Math.hypot(t[0],t[1])||10,a=vp.convertToViewportPoint(t[4],t[5]),b=vp.convertToViewportPoint(t[4]+i.width*t[0]/fs,t[5]+i.width*t[1]/fs);return{x:Math.min(a[0],b[0]),y:vp.height-a[1],s:i.str,w:Math.abs(b[0]-a[0]),fs}})});
       }
     }
-    $('pgsel').replaceChildren(...raw.map((r,i)=>new Option(r.name,i)));
+    $('pgsel').replaceChildren(...raw.map((r,i)=>new Option(r.name+' - '+(r.W>r.H?'Lanskap':'Potret'),i)));
     build();
   }catch(err){$('st').textContent='Gagal membaca PDF: '+err.message+'. Pastikan file tidak terkunci password.'}
 };
@@ -133,14 +133,14 @@ function lines(items,rt,ct){ // item -> baris -> sel (dipakai untuk teks di luar
   for(const it of items){const r=rows[rows.length-1];if(r&&Math.abs(r.y-it.y)<=rt)r.it.push(it);else rows.push({y:it.y,it:[it]})}
   return rows.map(r=>{r.it.sort((a,b)=>a.x-b.x);const cells=[];let end=-1e9;
     for(const it of r.it){const c=cells[cells.length-1];
-      if(c&&it.x-end<ct){c.s+=(it.x-end>1?' ':'')+it.s;c.fs=Math.max(c.fs,it.fs)}else cells.push({x:it.x,s:it.s,fs:it.fs,y:r.y});
+      if(c&&it.x-end<ct){c.s+=(it.x-end>it.fs*.15?' ':'')+it.s;c.fs=Math.max(c.fs,it.fs)}else cells.push({x:it.x,s:it.s,fs:it.fs,y:r.y});
       end=it.x+it.w}
     return cells});
 }
 function joinLines(items,rt){
   items.sort((a,b)=>b.y-a.y||a.x-b.x);const L=[];
   for(const it of items){const l=L[L.length-1];if(l&&Math.abs(l.y-it.y)<=rt){l.it.push(it)}else L.push({y:it.y,it:[it]})}
-  return L.map(l=>{l.it.sort((a,b)=>a.x-b.x);let s='',e=null;for(const it of l.it){s+=(e!==null&&it.x-e>1?' ':'')+it.s;e=it.x+it.w}return s}).join('\n');
+  return L.map(l=>{l.it.sort((a,b)=>a.x-b.x);let s='',e=null;for(const it of l.it){s+=(e!==null&&it.x-e>it.fs*.15?' ':'')+it.s;e=it.x+it.w}return s}).join('\n');
 }
 
 function model(pg,rt,ct){
@@ -204,7 +204,7 @@ function model(pg,rt,ct){
   let B=cl(grids.flatMap(G=>G.xs),T);
   const fl=lines(free,rt,ct);
   [...new Set(fl.flatMap(r=>r.map(c=>c.x)))].sort((a,b)=>a-b).forEach(x=>{if(!B.length||Math.abs(near(B,x)-x)>ct)B.push(x)});
-  B.sort((a,b)=>a-b);if(!B.length)return{colW:[],rowH:[],cells:[]};
+  B.sort((a,b)=>a-b);if(!B.length)return{colW:[],rowH:[],cells:[],W:pg.W,H:pg.H,ox:0,oy:0,mr:36,mb:36};
   B.push(B[B.length-1]+80);
   const ix=x=>B.indexOf(near(B,x));
   const colW=B.slice(0,-1).map((x,i)=>B[i+1]-x);
@@ -225,16 +225,18 @@ function model(pg,rt,ct){
           r:Array.from({length:k.r1-k.r0+1},(_,i)=>k.r0+i).every(r=>G.hv(xr,G.ys[r],G.ys[r+1])),
           t:Array.from({length:k.c1-k.c0+1},(_,i)=>k.c0+i).every(c=>G.hh(G.ys[k.r0],G.xs[c],G.xs[c+1])),
           b:Array.from({length:k.c1-k.c0+1},(_,i)=>k.c0+i).every(c=>G.hh(G.ys[k.r1+1],G.xs[c],G.xs[c+1]))};
-        let al='left',t='',fs=9;
+        let al='left',va='middle',t='',fs=9;
         if(k.items.length){
           t=joinLines(k.items,rt);fs=Math.max(...k.items.map(i=>i.fs));
           const gl=Math.min(...k.items.map(i=>i.x))-xl,gr=xr-Math.max(...k.items.map(i=>i.x+i.w));
           al=gl>3&&Math.abs(gl-gr)<=Math.max(3,.1*(xr-xl))?'center':(gr<gl-2?'right':'left');
+          const gt=G.ys[k.r0]-Math.max(...k.items.map(i=>i.y+i.fs*.8)),gb=Math.min(...k.items.map(i=>i.y-i.fs*.2))-G.ys[k.r1+1];
+          va=Math.abs(gt-gb)<=Math.max(2,.2*(G.ys[k.r0]-G.ys[k.r1+1]))?'middle':(gt<gb?'top':'bottom');
         }
         const cx=(xl+xr)/2,cy=(G.ys[k.r0]+G.ys[k.r1+1])/2;
         const fl2=pg.F.filter(q=>cx>=q.x1&&cx<=q.x2&&cy>=q.y1&&cy<=q.y2).sort((a,b)=>(a.x2-a.x1)*(a.y2-a.y1)-(b.x2-b.x1)*(b.y2-b.y1))[0];
         const c0=ix(xl);
-        cells.push({r:R+k.r0,c:c0,rs:k.r1-k.r0+1,cs:Math.max(1,ix(xr)-c0),t,fs,al,b:bd,fill:fl2&&fl2.c});
+        cells.push({r:R+k.r0,c:c0,rs:k.r1-k.r0+1,cs:Math.max(1,ix(xr)-c0),t,fs,al,va,wrap:true,b:bd,fill:fl2&&fl2.c});
       }
     }else{
       rowH.push(Math.max(...b.row.map(c=>c.fs))*1.3);
@@ -250,14 +252,15 @@ function model(pg,rt,ct){
     for(let i=0;i<c.rs;i++)for(let j=0;j<c.cs;j++)occ.add((c.r+i)+','+(c.c+j));
     ok.push(c);
   }
-  return{colW,rowH,cells:ok};
+  const maxR=Math.max(...pg.items.map(i=>i.x+i.w),...grids.map(G=>G.x2));
+  return{colW,rowH,cells:ok,W:pg.W,H:pg.H,ox:B[0],oy:Math.max(0,pg.H-blocks[0].top),mr:Math.max(0,pg.W-maxR),mb:Math.max(0,prev)};
 }
 
 function build(){
   const rt=+$('rt').value,ct=+$('ct').value;
   out=raw.map(pg=>({name:pg.name.slice(0,31),...model(pg,rt,ct)}));
   $('dl').disabled=false;show();
-  $('st').textContent=`${out.length} halaman terbaca. Pratinjau mengikuti bentuk tabel di PDF. Jika ada teks yang menyatu atau terpecah, atur slider.`;
+  $('st').textContent=`${out.length} halaman terbaca. Pratinjau mengikuti ukuran dan arah kertas PDF. Jika ada teks yang menyatu atau terpecah, atur slider.`;
 }
 function show(){
   const m=out[+$('pgsel').value||0];if(!m)return;
@@ -277,7 +280,9 @@ function show(){
       if(o.fill)td.style.background='#'+o.fill;
     }
   });
-  $('pv').hidden=false;$('pv').replaceChildren(tb);
+  const pp=document.createElement('div');pp.className='paper';pp.style.width=m.W*k+'px';pp.style.height=m.H*k+'px';
+  tb.style.position='absolute';tb.style.left=m.ox*k+'px';tb.style.top=m.oy*k+'px';pp.append(tb);
+  $('pv').hidden=false;$('pv').replaceChildren(pp);
 }
 const num=(v,on)=>{if(!on)return v;const t=v.trim();return /^-?(0|[1-9]\d*)(\.\d+)?$/.test(t)?parseFloat(t):v};
 $('dl').onclick=async()=>{
@@ -287,7 +292,11 @@ $('dl').onclick=async()=>{
   for(const m of out){
     let nm=m.name,n=2;while(used.has(nm))nm=m.name.slice(0,28)+'_'+n++;used.add(nm);
     const ws=wb.addWorksheet(nm);
-    ws.columns=m.colW.map(w=>({width:Math.max(1.5,w*.19)}));
+    ws.views=[{showGridLines:false}];
+    const s=Math.min(m.W,m.H),l=Math.max(m.W,m.H),is=(a,b)=>Math.abs(s-a)<10&&Math.abs(l-b)<12;
+    const mg=v=>Math.min(2,Math.max(.2,v/72));
+    ws.pageSetup={paperSize:is(842,1191)?8:is(420,595)?11:is(612,792)?1:is(612,1008)?5:9,orientation:m.W>m.H?'landscape':'portrait',fitToPage:true,fitToWidth:1,fitToHeight:0,margins:{left:mg(m.ox),right:mg(m.mr),top:mg(m.oy),bottom:mg(m.mb),header:.1,footer:.1}};
+    ws.columns=m.colW.map(w=>({width:Math.max(1,(w*4/3-5)/7)}));
     m.rowH.forEach((h,i)=>ws.getRow(i+1).height=Math.max(6,h));
     for(const c of m.cells){
       ws.getCell(c.r+1,c.c+1).value=num(c.t,on&&!c.t.includes('\n'))||null;
@@ -296,8 +305,8 @@ $('dl').onclick=async()=>{
         if(c.b.l&&j===0)bd.left=thin;if(c.b.r&&j===c.cs-1)bd.right=thin;
         if(c.b.t&&i===0)bd.top=thin;if(c.b.b&&i===c.rs-1)bd.bottom=thin;
         x.border=bd;
-        x.font={name:'Arial',size:Math.min(72,Math.max(6,Math.round(c.fs)))};
-        x.alignment={horizontal:c.al,vertical:'middle',wrapText:c.rs>1||c.cs>1||c.t.includes('\n')};
+        x.font={name:'Arial',size:Math.min(72,Math.max(6,Math.round(c.fs*.9*2)/2))};
+        x.alignment={horizontal:c.al,vertical:c.va||'middle',wrapText:!!c.wrap};
         if(c.fill)x.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF'+c.fill}};
       }
       if(c.rs>1||c.cs>1)ws.mergeCells(c.r+1,c.c+1,c.r+c.rs,c.c+c.cs);
